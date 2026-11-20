@@ -9,7 +9,28 @@ const log = ref([]);
 const error = ref('');
 
 const b64ToBytes = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
+const bytesToB64 = (b) => btoa(String.fromCharCode(...new Uint8Array(b)));
 const note = (msg) => log.value.unshift(`${new Date().toLocaleTimeString()} ${msg}`);
+
+let seq = 0;
+
+async function seal(obj) {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const data = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key.value, new TextEncoder().encode(JSON.stringify(obj)));
+  return { iv: bytesToB64(iv), data: bytesToB64(data) };
+}
+
+async function unseal({ iv, data }) {
+  const bytes = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: b64ToBytes(iv) }, key.value, b64ToBytes(data));
+  return JSON.parse(new TextDecoder().decode(bytes));
+}
+
+// Every call carries an encrypted body plus a counter the server refuses to see twice.
+async function postEncrypted(path, payload) {
+  const body = JSON.stringify(await seal({ ...payload, seq: ++seq }));
+  note(`browser: encrypted request ${path} (seq ${seq})`);
+  return fetch(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body });
+}
 
 // Once per login session. The AES key is derived into a non-extractable handle:
 // JS (and any injected script) can use it but never read its bytes.
@@ -38,8 +59,9 @@ async function negotiate() {
       pair.privateKey,
       { name: 'AES-GCM', length: 256 },
       false,
-      ['decrypt'],
+      ['encrypt', 'decrypt'],
     );
+    seq = 0;
     note('browser: derived the same AES-256 key (non-extractable, memory only)');
   } catch (e) {
     error.value = e.message;
@@ -47,23 +69,49 @@ async function negotiate() {
   }
 }
 
-// Every API call: server encrypts with AES-GCM + random IV, browser decrypts.
+// Every API call: encrypted request in, encrypted response out, decrypted here.
 async function fetchData() {
   if (!key.value) return negotiate().then(fetchData);
   error.value = '';
   try {
-    const res = await fetch('/api/data');
+    const res = await postEncrypted('/api/data', {});
     if (!res.ok) throw new Error(`request failed: ${res.status}`);
     const payload = await res.json();
     wire.value = payload;
     note(`server: encrypted response (iv ${payload.iv.slice(0, 12)}…)`);
-    const bytes = await crypto.subtle.decrypt(
-      { name: 'AES-GCM', iv: b64ToBytes(payload.iv) },
-      key.value,
-      b64ToBytes(payload.data),
-    );
-    plain.value = JSON.parse(new TextDecoder().decode(bytes));
+    plain.value = await unseal(payload);
     note('browser: decrypted with Web Crypto');
+  } catch (e) {
+    error.value = e.message;
+    note(`error: ${e.message}`);
+  }
+}
+
+// Fresh ECDH pairs on both sides; the reply travels under the old key and is
+// dropped once the new one is live.
+async function rotate() {
+  if (!key.value) return negotiate();
+  error.value = '';
+  try {
+    const pair = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, false, ['deriveKey']);
+    note('browser: generated a new ECDH P-256 key pair');
+    const publicKey = await crypto.subtle.exportKey('jwk', pair.publicKey);
+
+    const res = await postEncrypted('/api/rekey', { publicKey });
+    if (!res.ok) throw new Error(`rekey failed: ${res.status}`);
+    const { publicKey: nextServerJwk } = await unseal(await res.json());
+    serverPublicKey.value = nextServerJwk;
+
+    const nextServerKey = await crypto.subtle.importKey('jwk', nextServerJwk, { name: 'ECDH', namedCurve: 'P-256' }, false, []);
+    key.value = await crypto.subtle.deriveKey(
+      { name: 'ECDH', public: nextServerKey },
+      pair.privateKey,
+      { name: 'AES-GCM', length: 256 },
+      false,
+      ['encrypt', 'decrypt'],
+    );
+    seq = 0;
+    note('browser: rotated — new session key live, old key discarded');
   } catch (e) {
     error.value = e.message;
     note(`error: ${e.message}`);
@@ -76,6 +124,7 @@ async function logout() {
   serverPublicKey.value = null;
   wire.value = null;
   plain.value = null;
+  seq = 0;
   await fetch('/api/logout', { method: 'POST' }).catch(() => {});
   note('logout: key discarded, session gone');
 }
@@ -86,7 +135,7 @@ onMounted(negotiate);
 <template>
   <main>
     <h1>ECDH session key POC</h1>
-    <p class="sub">Express + Vue. Handshake once, then every response is AES-GCM encrypted.</p>
+    <p class="sub">Express + Vue. Handshake once, then every request and response is AES-GCM encrypted.</p>
 
     <section class="card">
       <div class="row">
@@ -99,6 +148,7 @@ onMounted(negotiate);
       </div>
       <div class="actions">
         <button @click="fetchData">Request encrypted data</button>
+        <button class="ghost" @click="rotate">Rotate key</button>
         <button class="ghost" @click="negotiate">Renegotiate</button>
         <button class="ghost" @click="logout">Logout</button>
       </div>
