@@ -37,6 +37,21 @@ run one side.
 | Rotate: fresh ECDH pairs both sides, reply under the old key | both | `/api/rekey`, `rotate` |
 | Logout drops key + session, next call renegotiates | both | `/api/logout` |
 
+## API
+
+Same origin for the browser; on the wire only ciphertext and public keys.
+
+| Endpoint | Body | Reply |
+|---|---|---|
+| `POST /api/handshake` | `{ publicKey }` (P-256 JWK) | `{ publicKey }`, sets `sid` cookie |
+| `POST /api/data` | `{ iv, data }` sealed with `{ seq }` | `{ iv, data }` sealed with `{ seq, message, secret, serverTime }` |
+| `POST /api/rekey` | `{ iv, data }` sealed with `{ seq, publicKey }` (new JWK) | `{ iv, data }` sealed under the **old** key with `{ publicKey }` |
+| `POST /api/logout` | empty | `{ ok: true }`, clears `sid` |
+
+Envelope: `iv` is 12 random bytes base64; `data` is the AES-256-GCM ciphertext
+base64 with the 16-byte tag appended. No `sid` → 401; body that won't decrypt →
+400; `seq` not ahead of the session counter → 409.
+
 ## Verify
 
 - Click **Request encrypted data** twice: `iv`/`data` differ each time, and the wire panel only ever shows ciphertext — the request body is `{iv, data}` too.
