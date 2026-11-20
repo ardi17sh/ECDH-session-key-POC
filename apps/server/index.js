@@ -1,6 +1,5 @@
 import express from 'express'
 import crypto from 'node:crypto'
-import { createServer as createViteServer } from 'vite'
 
 const app = express()
 app.use(express.json())
@@ -61,8 +60,5 @@ app.post('/api/logout', (req, res) => {
   res.json({ ok: true })
 })
 
-const vite = await createViteServer({ server: { middlewareMode: true }, appType: 'spa' })
-app.use(vite.middlewares)
-
 const port = 3001
-app.listen(port, () => console.log(`http://localhost:${port}`))
+app.listen(port, () => console.log(`api on http://localhost:${port}`))

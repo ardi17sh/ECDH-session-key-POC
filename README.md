@@ -1,22 +1,31 @@
 # ECDH session key POC
 
-Express + Vue demo of the diagram's flow: ECDH P-256 handshake once per login,
-then every API response is AES-256-GCM encrypted under the derived key.
+Express API + Vue 3 frontend, in one pnpm workspace. ECDH P-256 handshake once per
+login, then every API response is AES-256-GCM encrypted under the derived key.
 
-```sh
-npm install
-npm run dev          # http://localhost:3001
+```
+apps/
+  server/   Express API, :3001, sessions in memory
+  web/      Vue 3 + Vite, :5173, proxies /api to the server
 ```
 
-One process: Express hosts the Vite dev middleware, so client and API share an origin
-(cookies and `crypto.subtle` both just work).
+The browser only ever talks to one origin (the Vite dev server), so cookies and
+`crypto.subtle` both just work.
+
+```sh
+pnpm install
+pnpm dev          # http://localhost:5173
+```
+
+`pnpm dev` runs both packages in parallel; `pnpm dev:web` / `pnpm dev:server`
+run one side.
 
 ## Flow
 
 | Step | Where | Code |
 |---|---|---|
-| Generate ECDH pair, send public key | browser | `src/App.vue` `negotiate` |
-| Derive AES key, reply with server public key | server | `server/index.js` `/api/handshake` |
+| Generate ECDH pair, send public key | browser | `apps/web/src/App.vue` `negotiate` |
+| Derive AES key, reply with server public key | server | `apps/server/index.js` `/api/handshake` |
 | Derive same AES key (non-extractable, memory only) | browser | `crypto.subtle.deriveKey(..., false, ['decrypt'])` |
 | Encrypted response: AES-GCM, random IV, `{iv, data: ct‖tag}` base64 | server | `encrypt()` |
 | Decrypt via Web Crypto | browser | `fetchData` |
