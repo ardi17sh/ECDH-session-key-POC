@@ -3,6 +3,8 @@
 Express API + Vue 3 frontend, in one pnpm workspace. ECDH P-256 handshake once per
 login, then every API response is AES-256-GCM encrypted under the derived key.
 
+![ECDH session key flow](./session_key_ecdh_flow.png)
+
 ```
 apps/
   server/   Express API, :3001, sessions in memory
